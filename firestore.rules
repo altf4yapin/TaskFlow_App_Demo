@@ -1,0 +1,152 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Global deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidTask(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             (!('description' in data) || data.description == null || (data.description is string && data.description.size() <= 2000)) &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+             data.priority in ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] &&
+             (!('dueDate' in data) || data.dueDate == null || data.dueDate is timestamp) &&
+             (!('reminderMinutesBefore' in data) || data.reminderMinutesBefore == null || (data.reminderMinutesBefore is int && data.reminderMinutesBefore >= 0 && data.reminderMinutesBefore <= 10080)) &&
+             data.completed is bool &&
+             (!('completedAt' in data) || data.completedAt == null || (data.completedAt is timestamp && data.completedAt <= request.time)) &&
+             (!('sharedWithUids' in data) || (data.sharedWithUids is list && data.sharedWithUids.size() <= 50 && (data.sharedWithUids.size() == 0 || data.sharedWithUids[0] is string))) &&
+             (!('sharedWithEmails' in data) || (data.sharedWithEmails is list && data.sharedWithEmails.size() <= 50 && (data.sharedWithEmails.size() == 0 || data.sharedWithEmails[0] is string)));
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.email is string && data.email.size() >= 3 && data.email.size() <= 128 &&
+             (!('displayName' in data) || data.displayName == null || (data.displayName is string && data.displayName.size() <= 100)) &&
+             (!('photoUrl' in data) || data.photoUrl == null || (data.photoUrl is string && data.photoUrl.size() <= 1000));
+    }
+
+    function isValidCategory(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 50 &&
+             data.colorHex is string && data.colorHex.size() >= 4 && data.colorHex.size() <= 10 &&
+             data.iconName is string && data.iconName.size() >= 1 && data.iconName.size() <= 50;
+    }
+
+    match /tasks/{taskId} {
+      allow get: if isSignedIn() && (
+        existing().userId == request.auth.uid ||
+        ('sharedWithUids' in existing() && request.auth.uid in existing().sharedWithUids)
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        ('sharedWithUids' in resource.data && request.auth.uid in resource.data.sharedWithUids)
+      );
+
+      allow create: if isSignedIn() &&
+                       isValidId(taskId) &&
+                       incoming().id == taskId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidTask(incoming()) &&
+                       incoming().keys().hasAll(['id', 'userId', 'title', 'category', 'priority', 'completed', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['id', 'userId', 'title', 'description', 'category', 'priority', 'dueDate', 'reminderMinutesBefore', 'completed', 'completedAt', 'sharedWithUids', 'sharedWithEmails', 'createdAt', 'updatedAt']);
+
+      allow update: if isSignedIn() &&
+                       isValidId(taskId) &&
+                       isValidTask(incoming()) &&
+                       incoming().id == existing().id &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       (
+                         (existing().userId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'category', 'priority', 'dueDate', 'reminderMinutesBefore', 'completed', 'completedAt', 'sharedWithUids', 'sharedWithEmails', 'updatedAt'])) ||
+                         ('sharedWithUids' in existing() && request.auth.uid in existing().sharedWithUids &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['completed', 'completedAt', 'description', 'updatedAt']))
+                       );
+
+      allow delete: if isSignedIn() &&
+                       isValidId(taskId) &&
+                       existing().userId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       userId == request.auth.uid &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().keys().hasAll(['userId', 'email', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'email', 'displayName', 'photoUrl', 'createdAt', 'updatedAt']);
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       userId == request.auth.uid &&
+                       existing().userId == request.auth.uid &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'photoUrl', 'updatedAt']);
+
+      allow delete: if isSignedIn() &&
+                       isValidId(userId) &&
+                       userId == request.auth.uid;
+    }
+
+    match /categories/{categoryId} {
+      allow get: if isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+                       isValidId(categoryId) &&
+                       incoming().id == categoryId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       isValidCategory(incoming()) &&
+                       incoming().keys().hasAll(['id', 'userId', 'name', 'colorHex', 'iconName', 'createdAt']) &&
+                       incoming().keys().hasOnly(['id', 'userId', 'name', 'colorHex', 'iconName', 'createdAt']);
+
+      allow update: if isSignedIn() &&
+                       isValidId(categoryId) &&
+                       existing().userId == request.auth.uid &&
+                       incoming().id == existing().id &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidCategory(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['name', 'colorHex', 'iconName']);
+
+      allow delete: if isSignedIn() &&
+                       isValidId(categoryId) &&
+                       existing().userId == request.auth.uid;
+    }
+  }
+}
